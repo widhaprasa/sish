@@ -1,4 +1,4 @@
-module github.com/antoniomika/sish
+module github.com/widhaprasa/sish
 
 go 1.18
 

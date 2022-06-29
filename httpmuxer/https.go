@@ -6,8 +6,8 @@ import (
 	"log"
 	"net"
 
-	"github.com/antoniomika/sish/utils"
 	"github.com/spf13/viper"
+	"github.com/widhaprasa/sish/utils"
 )
 
 type proxyListener struct {

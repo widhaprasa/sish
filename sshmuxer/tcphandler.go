@@ -8,18 +8,26 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/antoniomika/sish/utils"
 	"github.com/antoniomika/syncmap"
 	"github.com/logrusorgru/aurora"
 	"github.com/pires/go-proxyproto"
 	"github.com/spf13/viper"
 	"github.com/vulcand/oxy/roundrobin"
+	"github.com/widhaprasa/sish/utils"
 )
 
 // handleTCPListener handles the creation of the tcpHandler
 // (or addition for load balancing) and set's up the underlying listeners.
 func handleTCPListener(check *channelForwardMsg, bindPort uint32, requestMessages string, listenerHolder *utils.ListenerHolder, state *utils.State, sshConn *utils.SSHConnection, sniProxyEnabled bool) (*utils.TCPHolder, *roundrobin.RoundRobin, string, *url.URL, string, string, error) {
 	tcpAddr, tcpPort, tH := utils.GetOpenPort(check.Addr, bindPort, state, sshConn, sniProxyEnabled)
+
+	// TCP Port Forwarding Authentication
+	if viper.GetBool("tcp-port-forwarding-authentication") {
+		tcpPortFwdAuth, ok := state.TCPPortFwdAuthListeners.Load(sshConn.SSHConn.User())
+		if !ok || tcpPort != uint32(tcpPortFwdAuth.Port) {
+			return nil, nil, "", nil, "", "", fmt.Errorf("error assigning requested port to tunnel")
+		}
+	}
 
 	if tcpPort != bindPort && viper.GetBool("force-requested-ports") {
 		return nil, nil, "", nil, "", "", fmt.Errorf("error assigning requested port to tunnel")

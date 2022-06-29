@@ -2,10 +2,12 @@ package utils
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/antoniomika/syncmap"
@@ -80,6 +82,9 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/disconnectroute/") && userIsAdmin {
 		c.HandleDisconnectRoute(proxyUrl, g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/tcpportfwdauth/") && userIsAdmin {
+		c.HandleTCPPortForwardingAuth(proxyUrl, g)
 		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/clients") && hostIsRoot && userIsAdmin {
 		c.HandleClients(proxyUrl, g)
@@ -401,6 +406,97 @@ func (c *WebConsole) BroadcastRoute(route string, message []byte) {
 	for _, client := range clients {
 		client.Send <- message
 	}
+}
+
+// HandleDisconnectRoute handles the disconnection request for a forwarded route.
+func (c *WebConsole) HandleTCPPortForwardingAuth(proxyUrl string, g *gin.Context) {
+	route := strings.Split(strings.TrimPrefix(g.Request.URL.Path, "/_sish/api/tcpportfwdauth/"), "/")
+	if len(route) < 1 {
+		g.String(http.StatusNotFound, "404 page not found")
+		return
+	}
+
+	if !viper.GetBool("tcp-port-forwarding-authentication") {
+		g.String(http.StatusNotFound, "404 page not found")
+		return
+	}
+
+	encRouteName := route[0]
+	if encRouteName == "create" || encRouteName == "delete" {
+
+		// Validate method
+		method := g.Request.Method
+		if method != "POST" {
+			g.String(http.StatusNotFound, "404 page not found")
+			return
+		}
+
+		// Parse json body
+		body := make(map[string]interface{})
+		err := json.NewDecoder(g.Request.Body).Decode(&body)
+		if err != nil {
+			g.String(http.StatusBadRequest, "400 bad request")
+			return
+		}
+
+		if encRouteName == "create" {
+			// Create
+
+			password := body["password"].(string)
+			port := int(body["port"].(float64))
+			username := strconv.Itoa(port)
+
+			c.State.TCPPortFwdAuthListeners.Store(username, &TCPPortFwdAuthHolder{
+				Username: username,
+				Password: password,
+				Port:     port,
+			})
+
+			g.JSON(http.StatusOK, map[string]any{
+				"username": username,
+				"password": password,
+				"port":     port,
+			})
+
+		} else {
+			// Delete
+
+			port := int(body["port"].(float64))
+			username := strconv.Itoa(port)
+
+			c.State.TCPPortFwdAuthListeners.Delete(username)
+
+			g.JSON(http.StatusOK, map[string]any{
+				"username": username,
+			})
+		}
+		return
+
+	} else if encRouteName == "list" {
+		// Delete
+
+		// Validate method
+		method := g.Request.Method
+		if method != "GET" {
+			g.String(http.StatusNotFound, "404 page not found")
+			return
+		}
+
+		response := map[string]any{}
+		c.State.TCPPortFwdAuthListeners.Range(func(username string, authHolder *TCPPortFwdAuthHolder) bool {
+			authMap := map[string]any{}
+			authMap["username"] = authHolder.Username
+			authMap["password"] = authHolder.Password
+			authMap["port"] = authHolder.Port
+			response[username] = authMap
+			return true
+		})
+
+		g.JSON(http.StatusOK, response)
+		return
+	}
+
+	g.String(http.StatusNotFound, "404 page not found")
 }
 
 // Handle is the only place socket reads and writes happen.

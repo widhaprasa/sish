@@ -5,8 +5,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/antoniomika/sish/utils"
 	"github.com/spf13/viper"
+	"github.com/widhaprasa/sish/utils"
 	"golang.org/x/crypto/ssh"
 )
 

@@ -443,7 +443,7 @@ func loadKeys() {
 
 // GetSSHConfig Returns an SSH config for the ssh muxer.
 // It handles auth and storing user connection information.
-func GetSSHConfig() *ssh.ServerConfig {
+func GetSSHConfig(state *State) *ssh.ServerConfig {
 	sshConfig := &ssh.ServerConfig{
 		NoClientAuth: !viper.GetBool("authentication"),
 		PasswordCallback: func(c ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
@@ -451,6 +451,14 @@ func GetSSHConfig() *ssh.ServerConfig {
 
 			if string(password) == viper.GetString("authentication-password") && viper.GetString("authentication-password") != "" {
 				return nil, nil
+			}
+
+			// TCP Port Forwarding Authentication
+			if viper.GetBool("tcp-port-forwarding-authentication") {
+				tcpPortFwdAuth, ok := state.TCPPortFwdAuthListeners.Load(c.User())
+				if ok && string(password) == tcpPortFwdAuth.Password {
+					return nil, nil
+				}
 			}
 
 			return nil, fmt.Errorf("password doesn't match")

@@ -7,11 +7,11 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/antoniomika/sish/utils"
 	"github.com/antoniomika/syncmap"
 	"github.com/logrusorgru/aurora"
 	"github.com/spf13/viper"
 	"github.com/vulcand/oxy/roundrobin"
+	"github.com/widhaprasa/sish/utils"
 )
 
 // handleAliasListener handles the creation of the aliasHandler

@@ -8,12 +8,12 @@ import (
 	"os"
 	"time"
 
-	"github.com/antoniomika/sish/sshmuxer"
-	"github.com/antoniomika/sish/utils"
 	"github.com/fsnotify/fsnotify"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"github.com/widhaprasa/sish/sshmuxer"
+	"github.com/widhaprasa/sish/utils"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
@@ -49,13 +49,13 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&configFile, "config", "c", "config.yml", "Config file")
 
 	rootCmd.PersistentFlags().StringP("ssh-address", "a", "localhost:2222", "The address to listen for SSH connections")
-	rootCmd.PersistentFlags().StringP("http-address", "i", "localhost:80", "The address to listen for HTTP connections")
+	rootCmd.PersistentFlags().StringP("http-address", "i", "localhost:8000", "The address to listen for HTTP connections")
 	rootCmd.PersistentFlags().StringP("https-address", "t", "localhost:443", "The address to listen for HTTPS connections")
 	rootCmd.PersistentFlags().StringP("tcp-address", "", "", "The address to listen for TCP connections")
-	rootCmd.PersistentFlags().StringP("redirect-root-location", "r", "https://github.com/antoniomika/sish", "The location to redirect requests to the root domain\nto instead of responding with a 404")
+	rootCmd.PersistentFlags().StringP("redirect-root-location", "r", "https://github.com/widhaprasa/sish", "The location to redirect requests to the root domain\nto instead of responding with a 404")
 	rootCmd.PersistentFlags().StringP("https-certificate-directory", "s", "deploy/ssl/", "The directory containing HTTPS certificate files (name.crt and name.key). There can be many crt/key pairs")
 	rootCmd.PersistentFlags().StringP("https-ondemand-certificate-email", "", "", "The email to use with Let's Encrypt for cert notifications. Can be left blank")
-	rootCmd.PersistentFlags().StringP("domain", "d", "ssi.sh", "The root domain for HTTP(S) multiplexing that will be appended to subdomains")
+	rootCmd.PersistentFlags().StringP("domain", "d", "localhost", "The root domain for HTTP(S) multiplexing that will be appended to subdomains")
 	rootCmd.PersistentFlags().StringP("banned-subdomains", "b", "localhost", "A comma separated list of banned subdomains that users are unable to bind")
 	rootCmd.PersistentFlags().StringP("banned-aliases", "", "", "A comma separated list of banned aliases that users are unable to bind")
 	rootCmd.PersistentFlags().StringP("banned-ips", "x", "", "A comma separated list of banned ips that are unable to access the service. Applies to HTTP, TCP, and SSH connections")
@@ -69,7 +69,7 @@ func init() {
 	rootCmd.PersistentFlags().StringP("port-bind-range", "n", "0,1024-65535", "Ports or port ranges that sish will allow to be bound when a user attempts to use TCP forwarding")
 	rootCmd.PersistentFlags().StringP("proxy-protocol-version", "q", "1", "What version of the proxy protocol to use. Can either be 1, 2, or userdefined.\nIf userdefined, the user needs to add a command to SSH called proxyproto=version (ie proxyproto=1)")
 	rootCmd.PersistentFlags().StringP("proxy-protocol-policy", "", "use", "What to do with the proxy protocol header. Can be use, ignore, reject, or require")
-	rootCmd.PersistentFlags().StringP("admin-console-token", "j", "", "The token to use for admin console access if it's enabled")
+	rootCmd.PersistentFlags().StringP("admin-console-token", "j", "token", "The token to use for admin console access if it's enabled")
 	rootCmd.PersistentFlags().StringP("service-console-token", "m", "", "The token to use for service console access. Auto generated if empty for each connected tunnel")
 	rootCmd.PersistentFlags().StringP("append-user-to-subdomain-separator", "", "-", "The token to use for separating username and subdomain selection in a virtualhost")
 	rootCmd.PersistentFlags().StringP("time-format", "", "2006/01/02 - 15:04:05", "The time format to use for both HTTP and general log messages")
@@ -86,8 +86,8 @@ func init() {
 	rootCmd.PersistentFlags().BoolP("verify-ssl", "", true, "Verify SSL certificates made on proxied HTTP connections")
 	rootCmd.PersistentFlags().BoolP("verify-dns", "", true, "Verify DNS information for hosts and ensure it matches a connecting users sha256 key fingerprint")
 	rootCmd.PersistentFlags().BoolP("cleanup-unauthed", "", true, "Cleanup unauthed SSH connections after a set timeout")
-	rootCmd.PersistentFlags().BoolP("cleanup-unbound", "", false, "Cleanup unbound (unforwarded) SSH connections after a set timeout")
-	rootCmd.PersistentFlags().BoolP("bind-random-ports", "", true, "Force TCP tunnels to bind a random port, where the kernel will randomly assign it")
+	rootCmd.PersistentFlags().BoolP("cleanup-unbound", "", true, "Cleanup unbound (unforwarded) SSH connections after a set timeout")
+	rootCmd.PersistentFlags().BoolP("bind-random-ports", "", false, "Force TCP tunnels to bind a random port, where the kernel will randomly assign it")
 	rootCmd.PersistentFlags().BoolP("append-user-to-subdomain", "", false, "Append the SSH user to the subdomain. This is useful in multitenant environments")
 	rootCmd.PersistentFlags().BoolP("debug", "", false, "Enable debugging information")
 	rootCmd.PersistentFlags().BoolP("ping-client", "", true, "Send ping requests to the underlying SSH client.\nThis is useful to ensure that SSH connections are kept open or close cleanly")
@@ -98,7 +98,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolP("proxy-protocol-listener", "", false, "Use the proxy-protocol to resolve ip addresses from user connections")
 	rootCmd.PersistentFlags().BoolP("https", "", false, "Listen for HTTPS connections. Requires a correct --https-certificate-directory")
 	rootCmd.PersistentFlags().BoolP("redirect-root", "", true, "Redirect the root domain to the location defined in --redirect-root-location")
-	rootCmd.PersistentFlags().BoolP("admin-console", "", false, "Enable the admin console accessible at http(s)://domain/_sish/console?x-authorization=admin-console-token")
+	rootCmd.PersistentFlags().BoolP("admin-console", "", true, "Enable the admin console accessible at http(s)://domain/_sish/console?x-authorization=admin-console-token")
 	rootCmd.PersistentFlags().BoolP("service-console", "", false, "Enable the service console for each service and send the info to connected clients")
 	rootCmd.PersistentFlags().BoolP("tcp-aliases", "", false, "Enable the use of TCP aliasing")
 	rootCmd.PersistentFlags().BoolP("sni-proxy", "", false, "Enable the use of SNI proxying")
@@ -122,6 +122,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolP("bind-root-domain", "", false, "Allow binding the root domain when accepting an HTTP listener")
 	rootCmd.PersistentFlags().BoolP("load-templates", "", true, "Load HTML templates. This is required for admin/service consoles")
 	rootCmd.PersistentFlags().BoolP("rewrite-host-header", "", true, "Force rewrite the host header if the user provides host-header=host.com")
+	rootCmd.PersistentFlags().BoolP("tcp-port-forwarding-authentication", "", true, "Activate TCP forwarding authentication per port")
 
 	rootCmd.PersistentFlags().IntP("http-port-override", "", 0, "The port to use for http command output. This does not effect ports used for connecting, it's for cosmetic use only")
 	rootCmd.PersistentFlags().IntP("https-port-override", "", 0, "The port to use for HTTPS command output. This does not effect ports used for connecting, it's for cosmetic use only")

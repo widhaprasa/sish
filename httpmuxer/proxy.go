@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/antoniomika/sish/utils"
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/viper"
+	"github.com/widhaprasa/sish/utils"
 )
 
 // RoundTripper returns the specific handler for unix connections. This

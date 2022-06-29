@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/antoniomika/sish/utils"
 	"github.com/logrusorgru/aurora"
 	"github.com/spf13/viper"
+	"github.com/widhaprasa/sish/utils"
 	"golang.org/x/crypto/ssh"
 )
 

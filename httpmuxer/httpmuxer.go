@@ -16,13 +16,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/antoniomika/sish/utils"
 	"github.com/antoniomika/syncmap"
 	"github.com/caddyserver/certmagic"
 	"github.com/pires/go-proxyproto"
 	"github.com/spf13/viper"
 	"github.com/vulcand/oxy/forward"
 	"github.com/vulcand/oxy/roundrobin"
+	"github.com/widhaprasa/sish/utils"
 
 	"github.com/gin-gonic/gin"
 )
@@ -115,7 +115,8 @@ func Start(state *utils.State) {
 
 		hostSplit := strings.Split(c.Request.Host, ":")
 		hostname := hostSplit[0]
-		hostIsRoot := hostname == viper.GetString("domain")
+		// hostIsRoot := hostname == viper.GetString("domain")
+		hostIsRoot := true
 
 		if viper.GetBool("admin-console") && hostIsRoot && strings.HasPrefix(c.Request.URL.Path, "/_sish/") {
 			state.Console.HandleRequest("", hostIsRoot, c)

@@ -79,6 +79,13 @@ type TCPHolder struct {
 	NoHandle       bool
 }
 
+// TCPPortForwardingAuthHolder holds temporary tcp auth
+type TCPPortFwdAuthHolder struct {
+	Username string
+	Password string
+	Port     int
+}
+
 // Handle will copy connections from one handler to a roundrobin server.
 func (tH *TCPHolder) Handle(state *State) {
 	for {
@@ -176,26 +183,28 @@ func (tH *TCPHolder) Handle(state *State) {
 // State handles overall state. It retains mutexed maps for various
 // datastructures and shared objects.
 type State struct {
-	Console        *WebConsole
-	SSHConnections *syncmap.Map[string, *SSHConnection]
-	Listeners      *syncmap.Map[string, net.Listener]
-	HTTPListeners  *syncmap.Map[string, *HTTPHolder]
-	AliasListeners *syncmap.Map[string, *AliasHolder]
-	TCPListeners   *syncmap.Map[string, *TCPHolder]
-	IPFilter       *ipfilter.IPFilter
-	LogWriter      io.Writer
+	Console                 *WebConsole
+	SSHConnections          *syncmap.Map[string, *SSHConnection]
+	Listeners               *syncmap.Map[string, net.Listener]
+	HTTPListeners           *syncmap.Map[string, *HTTPHolder]
+	AliasListeners          *syncmap.Map[string, *AliasHolder]
+	TCPListeners            *syncmap.Map[string, *TCPHolder]
+	IPFilter                *ipfilter.IPFilter
+	LogWriter               io.Writer
+	TCPPortFwdAuthListeners *syncmap.Map[string, *TCPPortFwdAuthHolder]
 }
 
 // NewState returns a new State struct.
 func NewState() *State {
 	return &State{
-		SSHConnections: syncmap.New[string, *SSHConnection](),
-		Listeners:      syncmap.New[string, net.Listener](),
-		HTTPListeners:  syncmap.New[string, *HTTPHolder](),
-		AliasListeners: syncmap.New[string, *AliasHolder](),
-		TCPListeners:   syncmap.New[string, *TCPHolder](),
-		IPFilter:       Filter,
-		Console:        NewWebConsole(),
-		LogWriter:      multiWriter,
+		SSHConnections:          syncmap.New[string, *SSHConnection](),
+		Listeners:               syncmap.New[string, net.Listener](),
+		HTTPListeners:           syncmap.New[string, *HTTPHolder](),
+		AliasListeners:          syncmap.New[string, *AliasHolder](),
+		TCPListeners:            syncmap.New[string, *TCPHolder](),
+		IPFilter:                Filter,
+		Console:                 NewWebConsole(),
+		LogWriter:               multiWriter,
+		TCPPortFwdAuthListeners: syncmap.New[string, *TCPPortFwdAuthHolder](),
 	}
 }

@@ -10,11 +10,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/antoniomika/sish/utils"
 	"github.com/logrusorgru/aurora"
 	"github.com/pires/go-proxyproto"
 	"github.com/spf13/viper"
 	"github.com/vulcand/oxy/roundrobin"
+	"github.com/widhaprasa/sish/utils"
 	"golang.org/x/crypto/ssh"
 )
 

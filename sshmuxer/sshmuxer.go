@@ -12,11 +12,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/antoniomika/sish/httpmuxer"
-	"github.com/antoniomika/sish/utils"
 	"github.com/antoniomika/syncmap"
 	"github.com/pires/go-proxyproto"
 	"github.com/spf13/viper"
+	"github.com/widhaprasa/sish/httpmuxer"
+	"github.com/widhaprasa/sish/utils"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -111,7 +111,7 @@ func Start() {
 
 	log.Println("Starting SSH service on address:", viper.GetString("ssh-address"))
 
-	sshConfig := utils.GetSSHConfig()
+	sshConfig := utils.GetSSHConfig(state)
 
 	var listener net.Listener
 

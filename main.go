@@ -4,7 +4,7 @@ package main
 import (
 	"log"
 
-	"github.com/antoniomika/sish/cmd"
+	"github.com/widhaprasa/sish/cmd"
 )
 
 // main will start the sish command lifecycle and spawn the sish services.
