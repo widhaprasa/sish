@@ -445,7 +445,8 @@ func loadKeys() {
 // It handles auth and storing user connection information.
 func GetSSHConfig(state *State) *ssh.ServerConfig {
 	sshConfig := &ssh.ServerConfig{
-		NoClientAuth: !viper.GetBool("authentication"),
+		ServerVersion: "SSH-2.0-sish",
+		NoClientAuth:  !viper.GetBool("authentication"),
 		PasswordCallback: func(c ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
 			log.Printf("Login attempt: %s, user %s", c.RemoteAddr(), c.User())
 
@@ -936,7 +937,7 @@ func GetOpenAlias(addr string, port string, state *State, sshConn *SSHConnection
 				if viper.GetBool("force-requested-aliases") {
 					extra = ""
 
-					bindErr = fmt.Errorf("unable to bind requested port")
+					bindErr = fmt.Errorf("unable to bind requested alias")
 				}
 
 				sshConn.SendMessage(aurora.Sprintf("The alias %s is unavailable.%s", aurora.Red(alias), extra), true)
@@ -966,6 +967,10 @@ func GetOpenAlias(addr string, port string, state *State, sshConn *SSHConnection
 		}
 
 		for checkAlias(alias) {
+		}
+
+		if bindErr != nil {
+			return "", nil
 		}
 
 		return alias, aH

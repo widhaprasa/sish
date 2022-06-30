@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -57,6 +58,8 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 		log.Println("Error unmarshaling remote forward payload:", err)
 	}
 
+	check.Addr = strings.ToLower(check.Addr)
+
 	bindPort := check.Rport
 	stringPort := strconv.FormatUint(uint64(bindPort), 10)
 
@@ -89,20 +92,25 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 		}
 	}
 
-	tmpfile, err := ioutil.TempFile("", sshConn.SSHConn.RemoteAddr().String()+":"+stringPort)
+	tmpfile, err := ioutil.TempFile("", strings.ReplaceAll(sshConn.SSHConn.RemoteAddr().String()+":"+stringPort, ":", "_"))
 	if err != nil {
+		log.Println("Error creating temporary file:", err)
+
 		err = newRequest.Reply(false, nil)
 		if err != nil {
 			log.Println("Error replying to socket request:", err)
 		}
 		return
 	}
+	tmpfile.Close()
 	os.Remove(tmpfile.Name())
 
 	listenAddr := tmpfile.Name()
 
 	chanListener, err := net.Listen("unix", listenAddr)
 	if err != nil {
+		log.Println("Error listening on unix socket:", err)
+
 		err = newRequest.Reply(false, nil)
 		if err != nil {
 			log.Println("Error replying to socket request:", err)
@@ -152,6 +160,8 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 	case utils.HTTPListener:
 		pH, serverURL, requestMessages, err := handleHTTPListener(check, stringPort, mainRequestMessages, listenerHolder, state, sshConn)
 		if err != nil {
+			log.Println("Error setting up HTTPListener:", err)
+
 			err = newRequest.Reply(false, nil)
 			if err != nil {
 				log.Println("Error replying to socket request:", err)
@@ -183,6 +193,8 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 	case utils.AliasListener:
 		aH, serverURL, validAlias, requestMessages, err := handleAliasListener(check, stringPort, mainRequestMessages, listenerHolder, state, sshConn)
 		if err != nil {
+			log.Println("Error setting up AliasListener:", err)
+
 			err = newRequest.Reply(false, nil)
 			if err != nil {
 				log.Println("Error replying to socket request:", err)
@@ -210,6 +222,8 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 	case utils.TCPListener:
 		tH, balancer, balancerName, serverURL, tcpAddr, requestMessages, err := handleTCPListener(check, bindPort, mainRequestMessages, listenerHolder, state, sshConn, sniProxyForced)
 		if err != nil {
+			log.Println("Error setting up TCPListener:", err)
+
 			err = newRequest.Reply(false, nil)
 			if err != nil {
 				log.Println("Error replying to socket request:", err)
