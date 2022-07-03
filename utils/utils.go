@@ -8,6 +8,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -535,6 +537,40 @@ func generatePrivateKey(passphrase string) []byte {
 	return pemData
 }
 
+// generatePrivateKey creates a new rsa private key to be used by the
+// the SSH server as the host key.
+func generateRSAPrivateKey(passphrase string) []byte {
+	privatekey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	log.Println("Generated RSA Keypair")
+
+	// dump private key to file
+	var privateKeyBytes []byte = x509.MarshalPKCS1PrivateKey(privatekey)
+	privateKeyBlock := &pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: privateKeyBytes,
+	}
+
+	// Encrypt the pem
+	if passphrase != "" {
+		privateKeyBlock, err = x509.EncryptPEMBlock(rand.Reader, privateKeyBlock.Type, privateKeyBlock.Bytes, []byte(passphrase), x509.PEMCipherAES256)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	pemData := pem.EncodeToMemory(privateKeyBlock)
+	err = ioutil.WriteFile(filepath.Join(viper.GetString("private-keys-directory"), "ssh_key"), pemData, 0600)
+	if err != nil {
+		log.Println("Error writing to file:", err)
+	}
+
+	return pemData
+}
+
 // ParsePrivateKey parses the PrivateKey into a ssh.Signer and
 // let's it be used by the SSH server.
 func loadPrivateKey(passphrase string) ssh.Signer {
@@ -543,7 +579,11 @@ func loadPrivateKey(passphrase string) ssh.Signer {
 	pk, err := ioutil.ReadFile(filepath.Join(viper.GetString("private-keys-directory"), "ssh_key"))
 	if err != nil {
 		log.Println("Error loading private key, generating a new one:", err)
-		pk = generatePrivateKey(passphrase)
+		if viper.GetString("private-key-algorithm") == "RSA" {
+			pk = generateRSAPrivateKey(passphrase)
+		} else {
+			pk = generatePrivateKey(passphrase)
+		}
 	}
 
 	if passphrase != "" {
