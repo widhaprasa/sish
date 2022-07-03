@@ -49,7 +49,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&configFile, "config", "c", "config.yml", "Config file")
 
 	rootCmd.PersistentFlags().StringP("ssh-address", "a", "localhost:2222", "The address to listen for SSH connections")
-	rootCmd.PersistentFlags().StringP("http-address", "i", "localhost:8000", "The address to listen for HTTP connections")
+	rootCmd.PersistentFlags().StringP("http-address", "i", "localhost:80", "The address to listen for HTTP connections")
 	rootCmd.PersistentFlags().StringP("https-address", "t", "localhost:443", "The address to listen for HTTPS connections")
 	rootCmd.PersistentFlags().StringP("tcp-address", "", "", "The address to listen for TCP connections")
 	rootCmd.PersistentFlags().StringP("redirect-root-location", "r", "https://github.com/widhaprasa/sish", "The location to redirect requests to the root domain\nto instead of responding with a 404")
