@@ -81,9 +81,10 @@ type TCPHolder struct {
 
 // TCPPortForwardingAuthHolder holds temporary tcp auth
 type TCPPortFwdAuthHolder struct {
-	Username string
-	Password string
-	Port     int
+	Username   string
+	Password   string
+	Port       int
+	PingClient bool
 }
 
 // Handle will copy connections from one handler to a roundrobin server.

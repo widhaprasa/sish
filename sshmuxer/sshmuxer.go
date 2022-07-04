@@ -280,7 +280,15 @@ func Start() {
 				}
 			}()
 
-			if viper.GetBool("ping-client") {
+			pingClient := true
+			if viper.GetBool("tcp-port-forwarding-authentication") {
+				tcpPortFwdAuth, ok := state.TCPPortFwdAuthListeners.Load(sshConn.User())
+				if ok {
+					pingClient = tcpPortFwdAuth.PingClient
+				}
+			}
+
+			if viper.GetBool("ping-client") && pingClient {
 				go func() {
 					tickDuration := viper.GetDuration("ping-client-interval")
 					ticker := time.NewTicker(tickDuration)

@@ -446,16 +446,24 @@ func (c *WebConsole) HandleTCPPortForwardingAuth(proxyUrl string, g *gin.Context
 			port := int(body["port"].(float64))
 			username := strconv.Itoa(port)
 
+			pingClient := true
+			val, ok := body["ping_client"]
+			if ok {
+				pingClient = val.(bool)
+			}
+
 			c.State.TCPPortFwdAuthListeners.Store(username, &TCPPortFwdAuthHolder{
-				Username: username,
-				Password: password,
-				Port:     port,
+				Username:   username,
+				Password:   password,
+				Port:       port,
+				PingClient: pingClient,
 			})
 
 			g.JSON(http.StatusOK, map[string]any{
-				"username": username,
-				"password": password,
-				"port":     port,
+				"username":    username,
+				"password":    password,
+				"port":        port,
+				"ping_client": pingClient,
 			})
 
 		} else {
@@ -483,12 +491,13 @@ func (c *WebConsole) HandleTCPPortForwardingAuth(proxyUrl string, g *gin.Context
 		}
 
 		response := map[string]any{}
-		c.State.TCPPortFwdAuthListeners.Range(func(username string, authHolder *TCPPortFwdAuthHolder) bool {
-			authMap := map[string]any{}
-			authMap["username"] = authHolder.Username
-			authMap["password"] = authHolder.Password
-			authMap["port"] = authHolder.Port
-			response[username] = authMap
+		c.State.TCPPortFwdAuthListeners.Range(func(username string, tcpPortFwdAuth *TCPPortFwdAuthHolder) bool {
+			tcpPortFwdAuthMap := map[string]any{}
+			tcpPortFwdAuthMap["username"] = tcpPortFwdAuth.Username
+			tcpPortFwdAuthMap["password"] = tcpPortFwdAuth.Password
+			tcpPortFwdAuthMap["port"] = tcpPortFwdAuth.Port
+			tcpPortFwdAuthMap["ping_client"] = tcpPortFwdAuth.PingClient
+			response[username] = tcpPortFwdAuthMap
 			return true
 		})
 
