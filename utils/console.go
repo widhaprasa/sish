@@ -301,7 +301,6 @@ func (c *WebConsole) HandleClients(proxyUrl string, g *gin.Context) {
 
 		clients[clientName] = map[string]any{
 			"remoteAddr":        sshConn.SSHConn.RemoteAddr().String(),
-			"localAddr":         sshConn.SSHConn.LocalAddr().String(),
 			"user":              sshConn.SSHConn.User(),
 			"version":           string(sshConn.SSHConn.ClientVersion()),
 			"session":           sshConn.SSHConn.SessionID(),
