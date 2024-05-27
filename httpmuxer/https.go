@@ -7,6 +7,7 @@ import (
 	"net"
 
 	"github.com/spf13/viper"
+	"github.com/vulcand/oxy/roundrobin"
 	"github.com/widhaprasa/sish/utils"
 )
 
@@ -30,36 +31,48 @@ func (pL *proxyListener) Accept() (net.Conn, error) {
 			continue
 		}
 
-		tlsHello, buf, teeConn, peekErr := utils.PeekTLSHello(cl)
-		if peekErr != nil && tlsHello == nil {
-			log.Printf("Unable to read TLS hello: %s", peekErr)
-			cl.Close()
-			continue
+		tlsHello, teeConn, _ := utils.PeekTLSHello(cl)
+		if tlsHello == nil {
+			return teeConn, nil
 		}
 
 		balancerName := tlsHello.ServerName
+		if balancerName == "" {
+			return teeConn, nil
+		}
+
 		balancer, ok := pL.Holder.Balancers.Load(balancerName)
-		if balancerName == "" || !ok {
-			return teeConn, err
+		if !ok {
+			pL.Holder.Balancers.Range(func(n string, b *roundrobin.RoundRobin) bool {
+				if utils.MatchesWildcardHost(balancerName, n) {
+					balancer = b
+					return false
+				}
+				return true
+			})
+
+			if balancer == nil {
+				return teeConn, nil
+			}
 		}
 
 		connectionLocation, err := balancer.NextServer()
 		if err != nil {
 			log.Println("Unable to load connection location:", err)
-			cl.Close()
+			teeConn.Close()
 			continue
 		}
 
 		host, err := base64.StdEncoding.DecodeString(connectionLocation.Host)
 		if err != nil {
 			log.Println("Unable to decode connection location:", err)
-			cl.Close()
+			teeConn.Close()
 			continue
 		}
 
 		hostAddr := string(host)
 
-		logLine := fmt.Sprintf("Accepted connection from %s -> %s", cl.RemoteAddr().String(), cl.LocalAddr().String())
+		logLine := fmt.Sprintf("Accepted connection from %s -> %s", teeConn.RemoteAddr().String(), teeConn.LocalAddr().String())
 		log.Println(logLine)
 
 		if viper.GetBool("log-to-client") {
@@ -81,18 +94,11 @@ func (pL *proxyListener) Accept() (net.Conn, error) {
 		conn, err := net.Dial("unix", hostAddr)
 		if err != nil {
 			log.Println("Error connecting to tcp balancer:", err)
-			cl.Close()
+			teeConn.Close()
 			continue
 		}
 
-		_, err = conn.Write(buf.Bytes())
-		if err != nil {
-			log.Println("Unable to write to conn:", err)
-			cl.Close()
-			continue
-		}
-
-		go utils.CopyBoth(conn, cl)
+		go utils.CopyBoth(conn, teeConn)
 	}
 }
 

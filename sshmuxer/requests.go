@@ -2,7 +2,6 @@ package sshmuxer
 
 import (
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net"
 	"os"
@@ -11,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/antoniomika/multilistener"
 	"github.com/logrusorgru/aurora"
 	"github.com/pires/go-proxyproto"
 	"github.com/spf13/viper"
@@ -58,6 +58,7 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 		log.Println("Error unmarshaling remote forward payload:", err)
 	}
 
+	originalAddress := check.Addr
 	check.Addr = strings.ToLower(check.Addr)
 
 	bindPort := check.Rport
@@ -67,6 +68,17 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 
 	comparePortHTTP := viper.GetUint32("http-port-override")
 	comparePortHTTPS := viper.GetUint32("https-port-override")
+
+	httpRequestPortOverride := viper.GetUint32("http-request-port-override")
+	httpsRequestPortOverride := viper.GetUint32("https-request-port-override")
+
+	if httpRequestPortOverride != 0 {
+		comparePortHTTP = httpRequestPortOverride
+	}
+
+	if httpsRequestPortOverride != 0 {
+		comparePortHTTPS = httpsRequestPortOverride
+	}
 
 	if comparePortHTTP == 0 {
 		comparePortHTTP = 80
@@ -92,7 +104,7 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 		}
 	}
 
-	tmpfile, err := ioutil.TempFile("", strings.ReplaceAll(sshConn.SSHConn.RemoteAddr().String()+":"+stringPort, ":", "_"))
+	tmpfile, err := os.CreateTemp("", strings.ReplaceAll(sshConn.SSHConn.RemoteAddr().String()+":"+stringPort, ":", "_"))
 	if err != nil {
 		log.Println("Error creating temporary file:", err)
 
@@ -158,7 +170,7 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 
 	switch listenerType {
 	case utils.HTTPListener:
-		pH, serverURL, requestMessages, err := handleHTTPListener(check, stringPort, mainRequestMessages, listenerHolder, state, sshConn)
+		pH, serverURL, requestMessages, err := handleHTTPListener(check, stringPort, mainRequestMessages, listenerHolder, state, sshConn, connType)
 		if err != nil {
 			log.Println("Error setting up HTTPListener:", err)
 
@@ -234,7 +246,7 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 			return
 		}
 
-		portChannelForwardReplyPayload.Rport = uint32(tH.Listener.Addr().(*net.TCPAddr).Port)
+		portChannelForwardReplyPayload.Rport = uint32(tH.Listener.Addr().(*multilistener.MultiListener).Addresses()[0].(*net.TCPAddr).Port)
 
 		mainRequestMessages = requestMessages
 
@@ -289,9 +301,9 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 			}
 
 			resp := &forwardedTCPPayload{
-				Addr:       check.Addr,
+				Addr:       originalAddress,
 				Port:       portChannelForwardReplyPayload.Rport,
-				OriginAddr: check.Addr,
+				OriginAddr: originalAddress,
 				OriginPort: portChannelForwardReplyPayload.Rport,
 			}
 

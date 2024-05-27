@@ -10,14 +10,15 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
 	"io/fs"
-	"io/ioutil"
 	"log"
 	mathrand "math/rand"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
@@ -42,6 +43,9 @@ import (
 const (
 	// sishDNSPrefix is the prefix used for DNS TXT records.
 	sishDNSPrefix = "sish="
+
+	// Prefix used for defining wildcard host matchers.
+	wildcardPrefix = "*."
 )
 
 var (
@@ -133,7 +137,7 @@ func LoadProxyProtoConfig(l *proxyproto.Listener) {
 
 // GetRandomPortInRange returns a random port in the provided range.
 // The port range is a comma separated list of ranges or ports.
-func GetRandomPortInRange(portRange string) uint32 {
+func GetRandomPortInRange(listenAddr string, portRange string) uint32 {
 	var bindPort uint32
 
 	ranges := strings.Split(strings.TrimSpace(portRange), ",")
@@ -163,7 +167,6 @@ func GetRandomPortInRange(portRange string) uint32 {
 		}
 	}
 
-	mathrand.Seed(time.Now().UnixNano())
 	locHolder := mathrand.Intn(len(possible))
 
 	if len(possible[locHolder]) == 1 {
@@ -172,9 +175,9 @@ func GetRandomPortInRange(portRange string) uint32 {
 		bindPort = uint32(mathrand.Intn(int(possible[locHolder][1]-possible[locHolder][0])) + int(possible[locHolder][0]))
 	}
 
-	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", bindPort))
+	ln, err := Listen(GenerateAddress(listenAddr, bindPort))
 	if err != nil {
-		return GetRandomPortInRange(portRange)
+		return GetRandomPortInRange(listenAddr, portRange)
 	}
 
 	ln.Close()
@@ -235,7 +238,7 @@ func loadCerts(certManager *certmagic.Config) {
 	ctx := context.TODO()
 
 	for _, v := range certFiles {
-		err := certManager.CacheUnmanagedCertificatePEMFile(ctx, v, fmt.Sprintf("%s.key", strings.TrimSuffix(v, ".crt")), []string{})
+		_, err := certManager.CacheUnmanagedCertificatePEMFile(ctx, v, fmt.Sprintf("%s.key", strings.TrimSuffix(v, ".crt")), []string{})
 		if err != nil {
 			log.Println("Error loading unmanaged certificate:", err)
 		}
@@ -264,6 +267,11 @@ func loadPrivateKeys(config *ssh.ServerConfig) {
 	}
 
 	err := filepath.WalkDir(viper.GetString("private-keys-directory"), func(path string, d fs.DirEntry, err error) error {
+		if err != nil && d == nil {
+			// This is likely an error with the directory we are walking (such as it not existing)
+			return err
+		}
+
 		if d.IsDir() {
 			return nil
 		}
@@ -273,7 +281,7 @@ func loadPrivateKeys(config *ssh.ServerConfig) {
 			return nil
 		}
 
-		i, e := ioutil.ReadFile(path)
+		i, e := os.ReadFile(path)
 		if e != nil {
 			log.Printf("Can't read file %s as private key: %s\n", d.Name(), err)
 			return nil
@@ -420,7 +428,7 @@ func loadKeys() {
 			return nil
 		}
 
-		i, e := ioutil.ReadFile(path)
+		i, e := os.ReadFile(path)
 		if e != nil {
 			log.Printf("Can't read file %s as public key: %s\n", d.Name(), err)
 			return nil
@@ -487,6 +495,24 @@ func GetSSHConfig(state *State) *ssh.ServerConfig {
 				}
 			}
 
+			// Allow validation of public keys via a sub-request to another service
+			authUrl := viper.GetString("authentication-key-request-url")
+			if authUrl != "" {
+				validKey, err := checkAuthenticationKeyRequest(authUrl, authKey, c.RemoteAddr(), c.User())
+				if err != nil {
+					log.Printf("Error calling authentication URL %s: %s\n", authUrl, err)
+				}
+				if validKey {
+					permssionsData := &ssh.Permissions{
+						Extensions: map[string]string{
+							"pubKey":            string(authKey),
+							"pubKeyFingerprint": ssh.FingerprintSHA256(key),
+						},
+					}
+					return permssionsData, nil
+				}
+			}
+
 			return nil, fmt.Errorf("public key doesn't match")
 		},
 	}
@@ -494,6 +520,41 @@ func GetSSHConfig(state *State) *ssh.ServerConfig {
 	loadPrivateKeys(sshConfig)
 
 	return sshConfig
+}
+
+// checkAuthenticationKeyRequest makes an HTTP POST request to the specified url with
+// the provided ssh public key in OpenSSH 'authorized keys' format to validate
+// whether it should be accepted.
+func checkAuthenticationKeyRequest(authUrl string, authKey []byte, addr net.Addr, user string) (bool, error) {
+	parsedUrl, err := url.ParseRequestURI(authUrl)
+	if err != nil {
+		return false, fmt.Errorf("error parsing url %s", err)
+	}
+
+	c := &http.Client{
+		Timeout: viper.GetDuration("authentication-key-request-timeout"),
+	}
+	urlS := parsedUrl.String()
+	reqBodyMap := map[string]string{
+		"auth_key":    string(authKey),
+		"remote_addr": addr.String(),
+		"user":        user,
+	}
+	reqBody, err := json.Marshal(reqBodyMap)
+	if err != nil {
+		return false, fmt.Errorf("error jsonifying request body")
+	}
+	res, err := c.Post(urlS, "application/json", bytes.NewBuffer(reqBody))
+	if err != nil {
+		return false, err
+	}
+
+	if res.StatusCode != http.StatusOK {
+		log.Printf("Public key rejected by auth service: %s with status %d", urlS, res.StatusCode)
+		return false, nil
+	}
+
+	return true, nil
 }
 
 // generatePrivateKey creates a new ed25519 private key to be used by the
@@ -529,7 +590,7 @@ func generatePrivateKey(passphrase string) []byte {
 		pemData = pem.EncodeToMemory(pemBlock)
 	}
 
-	err = ioutil.WriteFile(filepath.Join(viper.GetString("private-keys-directory"), "ssh_key"), pemData, 0600)
+	err = os.WriteFile(filepath.Join(viper.GetString("private-keys-directory"), "ssh_key"), pemData, 0600)
 	if err != nil {
 		log.Println("Error writing to file:", err)
 	}
@@ -563,7 +624,7 @@ func generateRSAPrivateKey(passphrase string) []byte {
 	}
 
 	pemData := pem.EncodeToMemory(privateKeyBlock)
-	err = ioutil.WriteFile(filepath.Join(viper.GetString("private-keys-directory"), "ssh_key"), pemData, 0600)
+	err = os.WriteFile(filepath.Join(viper.GetString("private-keys-directory"), "ssh_key"), pemData, 0600)
 	if err != nil {
 		log.Println("Error writing to file:", err)
 	}
@@ -576,7 +637,7 @@ func generateRSAPrivateKey(passphrase string) []byte {
 func loadPrivateKey(passphrase string) ssh.Signer {
 	var signer ssh.Signer
 
-	pk, err := ioutil.ReadFile(filepath.Join(viper.GetString("private-keys-directory"), "ssh_key"))
+	pk, err := os.ReadFile(filepath.Join(viper.GetString("private-keys-directory"), "ssh_key"))
 	if err != nil {
 		log.Println("Error loading private key, generating a new one:", err)
 		if viper.GetString("private-key-algorithm") == "RSA" {
@@ -671,21 +732,21 @@ func GetOpenPort(addr string, port uint32, state *State, sshConn *SSHConnection,
 					bindErr = fmt.Errorf("unable to bind requested port")
 				}
 
-				sshConn.SendMessage(aurora.Sprintf("The TCP port %s is unavailable.%s", aurora.Red(listenAddr), extra), true)
+				sshConn.SendMessage(aurora.Sprintf("The TCP port %d is unavailable.%s", aurora.Red(bindPort), extra), true)
 			}
 		}
 
-		checkPort := func(checkerAddr string, checkerPort uint32) bool {
+		checkPort := func(checkerPort uint32) bool {
 			if bindErr != nil {
 				return false
 			}
 
-			listenAddr = fmt.Sprintf("%s:%d", bindAddr, bindPort)
+			listenAddr = GenerateAddress(bindAddr, bindPort)
 			checkedPort, err := CheckPort(checkerPort, viper.GetString("port-bind-range"))
 			_, ok := state.TCPListeners.Load(listenAddr)
 
 			if err == nil && (!viper.GetBool("tcp-load-balancer") || (viper.GetBool("tcp-load-balancer") && !ok) || (sniProxyEnabled && !ok)) {
-				ln, listenErr := net.Listen("tcp", listenAddr)
+				ln, listenErr := Listen(listenAddr)
 				if listenErr != nil {
 					err = listenErr
 				} else {
@@ -697,7 +758,7 @@ func GetOpenPort(addr string, port uint32, state *State, sshConn *SSHConnection,
 				reportUnavailable(true)
 
 				if viper.GetString("port-bind-range") != "" {
-					bindPort = GetRandomPortInRange(viper.GetString("port-bind-range"))
+					bindPort = GetRandomPortInRange(bindAddr, viper.GetString("port-bind-range"))
 				} else {
 					bindPort = 0
 				}
@@ -705,7 +766,7 @@ func GetOpenPort(addr string, port uint32, state *State, sshConn *SSHConnection,
 				bindPort = checkedPort
 			}
 
-			listenAddr = fmt.Sprintf("%s:%d", bindAddr, bindPort)
+			listenAddr = GenerateAddress(bindAddr, bindPort)
 			holder, ok := state.TCPListeners.Load(listenAddr)
 			if ok && (!sniProxyEnabled && viper.GetBool("tcp-load-balancer") || (sniProxyEnabled && viper.GetBool("sni-load-balancer"))) {
 				tH = holder
@@ -718,7 +779,7 @@ func GetOpenPort(addr string, port uint32, state *State, sshConn *SSHConnection,
 			return ok
 		}
 
-		for checkPort(bindAddr, bindPort) {
+		for checkPort(bindPort) {
 		}
 
 		return listenAddr, bindPort, tH
@@ -777,12 +838,17 @@ func GetOpenSNIHost(addr string, state *State, sshConn *SSHConnection, tH *TCPHo
 			}
 		}
 
-		checkHost := func(checkHost string) bool {
+		checkHost := func() bool {
 			if bindErr != nil {
 				return false
 			}
 
 			if viper.GetBool("bind-random-subdomains") || !first || inList(host, bannedSubdomainList) {
+				reportUnavailable(true)
+				host = getRandomHost()
+			}
+
+			if !viper.GetBool("bind-wildcards") && strings.HasPrefix(host, wildcardPrefix) {
 				reportUnavailable(true)
 				host = getRandomHost()
 			}
@@ -808,7 +874,7 @@ func GetOpenSNIHost(addr string, state *State, sshConn *SSHConnection, tH *TCPHo
 			return ok
 		}
 
-		for checkHost(host) {
+		for checkHost() {
 		}
 
 		return host, bindErr
@@ -902,12 +968,17 @@ func GetOpenHost(addr string, state *State, sshConn *SSHConnection) (*url.URL, *
 			}
 		}
 
-		checkHost := func(checkHost string) bool {
+		checkHost := func() bool {
 			if bindErr != nil {
 				return false
 			}
 
 			if viper.GetBool("bind-random-subdomains") || !first || inList(host, bannedSubdomainList) {
+				reportUnavailable(true)
+				host = getRandomHost()
+			}
+
+			if !viper.GetBool("bind-wildcards") && strings.HasPrefix(host, wildcardPrefix) {
 				reportUnavailable(true)
 				host = getRandomHost()
 			}
@@ -938,7 +1009,7 @@ func GetOpenHost(addr string, state *State, sshConn *SSHConnection) (*url.URL, *
 			return ok
 		}
 
-		for checkHost(host) {
+		for checkHost() {
 		}
 
 		if bindErr != nil {
@@ -984,7 +1055,7 @@ func GetOpenAlias(addr string, port string, state *State, sshConn *SSHConnection
 			}
 		}
 
-		checkAlias := func(checkAlias string) bool {
+		checkAlias := func() bool {
 			if bindErr != nil {
 				return false
 			}
@@ -1006,7 +1077,7 @@ func GetOpenAlias(addr string, port string, state *State, sshConn *SSHConnection
 			return ok
 		}
 
-		for checkAlias(alias) {
+		for checkAlias() {
 		}
 
 		if bindErr != nil {
@@ -1045,4 +1116,13 @@ func RandStringBytesMaskImprSrc(n int) string {
 	}
 
 	return string(b)
+}
+
+// MatchesWildcardHost checks if the hostname provided would match the potential wildcard.
+func MatchesWildcardHost(hostname string, potentialWildcard string) bool {
+	if !strings.Contains(potentialWildcard, wildcardPrefix) {
+		return false
+	}
+
+	return strings.HasPrefix(potentialWildcard, wildcardPrefix) && strings.HasSuffix(hostname, fmt.Sprintf(".%s", strings.TrimPrefix(potentialWildcard, wildcardPrefix)))
 }

@@ -20,23 +20,26 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-var (
-	// httpPort is used as a string override for the used HTTP port.
-	httpPort int
-
-	// httpsPort is used as a string override for the used HTTPS port.
-	httpsPort int
-)
-
 // Start initializes the ssh muxer service. It will start necessary components
 // and begin listening for SSH connections.
 func Start() {
-	_, httpPortString, err := net.SplitHostPort(viper.GetString("http-address"))
+	var (
+		httpPort  int
+		httpsPort int
+		sshPort   int
+	)
+
+	_, httpPortString, err := utils.ParseAddress(viper.GetString("http-address"))
 	if err != nil {
 		log.Fatalln("Error parsing address:", err)
 	}
 
-	_, httpsPortString, err := net.SplitHostPort(viper.GetString("https-address"))
+	_, httpsPortString, err := utils.ParseAddress(viper.GetString("https-address"))
+	if err != nil {
+		log.Fatalln("Error parsing address:", err)
+	}
+
+	_, sshPortString, err := utils.ParseAddress(viper.GetString("ssh-address"))
 	if err != nil {
 		log.Fatalln("Error parsing address:", err)
 	}
@@ -47,6 +50,11 @@ func Start() {
 	}
 
 	httpsPort, err = strconv.Atoi(httpsPortString)
+	if err != nil {
+		log.Fatalln("Error parsing address:", err)
+	}
+
+	sshPort, err = strconv.Atoi(sshPortString)
 	if err != nil {
 		log.Fatalln("Error parsing address:", err)
 	}
@@ -62,11 +70,17 @@ func Start() {
 	utils.WatchKeys()
 
 	state := utils.NewState()
+	state.Ports.HTTPPort = httpPort
+	state.Ports.HTTPSPort = httpsPort
+	state.Ports.SSHPort = sshPort
+
 	state.Console.State = state
 
 	go httpmuxer.Start(state)
 
-	if viper.GetBool("debug") {
+	debugInterval := viper.GetDuration("debug-interval")
+
+	if viper.GetBool("debug") && debugInterval > 0 {
 		go func() {
 			for {
 				log.Println("=======Start=========")
@@ -138,7 +152,7 @@ func Start() {
 				})
 				log.Print("========End==========\n")
 
-				time.Sleep(2 * time.Second)
+				time.Sleep(debugInterval)
 			}
 		}()
 	}
@@ -149,7 +163,7 @@ func Start() {
 
 	var listener net.Listener
 
-	l, err := net.Listen("tcp", viper.GetString("ssh-address"))
+	l, err := utils.Listen(viper.GetString("ssh-address"))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -224,15 +238,24 @@ func Start() {
 				return
 			}
 
+			pubKeyFingerprint := ""
+
+			if sshConn.Permissions != nil {
+				if _, ok := sshConn.Permissions.Extensions["pubKey"]; ok {
+					pubKeyFingerprint = sshConn.Permissions.Extensions["pubKeyFingerprint"]
+				}
+			}
+
 			holderConn := &utils.SSHConnection{
-				SSHConn:   sshConn,
-				Listeners: syncmap.New[string, net.Listener](),
-				Closed:    &sync.Once{},
-				Close:     make(chan bool),
-				Exec:      make(chan bool),
-				Messages:  make(chan string),
-				Session:   make(chan bool),
-				SetupLock: &sync.Mutex{},
+				SSHConn:                sshConn,
+				Listeners:              syncmap.New[string, net.Listener](),
+				Closed:                 &sync.Once{},
+				Close:                  make(chan bool),
+				Exec:                   make(chan bool),
+				Messages:               make(chan string),
+				Session:                make(chan bool),
+				SetupLock:              &sync.Mutex{},
+				TCPAliasesAllowedUsers: []string{pubKeyFingerprint},
 			}
 
 			state.SSHConnections.Store(sshConn.RemoteAddr().String(), holderConn)

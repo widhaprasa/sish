@@ -5,9 +5,11 @@ package httpmuxer
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -49,8 +51,22 @@ func Start(state *utils.State) {
 
 		// Here is where we check whether or not an IP is blocked.
 		clientIPAddr, _, err := net.SplitHostPort(c.Request.RemoteAddr)
-		if state.IPFilter.Blocked(c.ClientIP()) || state.IPFilter.Blocked(clientIPAddr) || err != nil {
-			c.AbortWithStatus(http.StatusForbidden)
+		clientIPAddrBlocked := state.IPFilter.Blocked(clientIPAddr)
+		cClientIP := c.ClientIP()
+		cClientIPBlocked := state.IPFilter.Blocked(cClientIP)
+
+		if clientIPAddrBlocked || cClientIPBlocked || err != nil {
+			status := http.StatusForbidden
+			c.AbortWithStatus(status)
+			if viper.GetBool("debug") {
+				log.Println("Aborting with status", status)
+				if clientIPAddrBlocked {
+					log.Println("Blocked:", clientIPAddr)
+				}
+				if cClientIPBlocked {
+					log.Println("Blocked:", cClientIP)
+				}
+			}
 			return
 		}
 		c.Next()
@@ -107,6 +123,28 @@ func Start(state *utils.State) {
 			}
 		}
 
+		routeInfo, routeOk := param.Keys["broadcastRoute"].(string)
+		routeData, dataOk := param.Keys["broadcastData"].(map[string]any)
+
+		if routeOk && dataOk {
+			roundTime := 10 * time.Microsecond
+			if param.Latency > time.Second {
+				roundTime = 10 * time.Millisecond
+			}
+
+			routeData["currentTime"] = param.TimeStamp.Format(viper.GetString("time-format"))
+			routeData["requestTime"] = param.Latency.Round(roundTime).String()
+			routeData["responseCode"] = param.StatusCode
+			routeData["responseStatus"] = fmt.Sprintf("%d %s", param.StatusCode, http.StatusText(param.StatusCode))
+
+			jsonData, err := json.Marshal(routeData)
+			if err != nil {
+				log.Println("unable to marshal json data", err)
+			} else {
+				state.Console.BroadcastRoute(routeInfo, jsonData)
+			}
+		}
+
 		return logLine
 	}), gin.Recovery(), func(c *gin.Context) {
 		c.Set("originalURI", c.Request.RequestURI)
@@ -114,6 +152,13 @@ func Start(state *utils.State) {
 		c.Set("originalRawPath", c.Request.URL.RawPath)
 
 		hostSplit := strings.Split(c.Request.Host, ":")
+		if strings.Contains(c.Request.Host, "[") && strings.Contains(c.Request.Host, "]") {
+			hostSplit = strings.Split(c.Request.Host, "]:")
+			if len(hostSplit) > 1 {
+				hostSplit[0] = hostSplit[0] + "]"
+			}
+		}
+
 		hostname := hostSplit[0]
 		// hostIsRoot := hostname == viper.GetString("domain")
 		hostIsRoot := true
@@ -128,6 +173,7 @@ func Start(state *utils.State) {
 		requestUsername, requestPassword, _ := c.Request.BasicAuth()
 		authNeeded := true
 
+		// Loop for checking if there's a listener with auth set (most specific)
 		state.HTTPListeners.Range(func(key string, locationListener *utils.HTTPHolder) bool {
 			parsedPassword, _ := locationListener.HTTPUrl.User.Password()
 
@@ -148,9 +194,23 @@ func Start(state *utils.State) {
 			return true
 		})
 
+		// Loop for checking if there's a listener with the exact host and path prefix set (next most specific)
 		if currentListener == nil {
 			state.HTTPListeners.Range(func(key string, locationListener *utils.HTTPHolder) bool {
 				if hostname == locationListener.HTTPUrl.Host && strings.HasPrefix(c.Request.URL.Path, locationListener.HTTPUrl.Path) {
+					currentListener = locationListener
+					authNeeded = false
+					return false
+				}
+
+				return true
+			})
+		}
+
+		// Loop for checking if there's a wildcard listener with the host and path prefix set (least most specific)
+		if currentListener == nil {
+			state.HTTPListeners.Range(func(key string, locationListener *utils.HTTPHolder) bool {
+				if utils.MatchesWildcardHost(hostname, locationListener.HTTPUrl.Host) && strings.HasPrefix(c.Request.URL.Path, locationListener.HTTPUrl.Path) {
 					currentListener = locationListener
 					authNeeded = false
 					return false
@@ -166,7 +226,11 @@ func Start(state *utils.State) {
 				return
 			}
 
-			c.AbortWithStatus(http.StatusNotFound)
+			status := http.StatusNotFound
+			c.AbortWithStatus(status)
+			if viper.GetBool("debug") {
+				log.Println("Aborting with status", status)
+			}
 			return
 		}
 
@@ -182,14 +246,20 @@ func Start(state *utils.State) {
 
 		if authNeeded {
 			c.Header("WWW-Authenticate", "Basic realm=\"sish\"")
-			c.AbortWithStatus(http.StatusUnauthorized)
+			status := http.StatusUnauthorized
+			c.AbortWithStatus(status)
+			if viper.GetBool("debug") {
+				log.Println("Aborting with status", status)
+			}
 			return
 		}
 
 		stripPath := viper.GetBool("strip-http-path")
+		forceHTTPS := viper.GetBool("force-all-https")
 
 		currentListener.SSHConnections.Range(func(key string, sshConn *utils.SSHConnection) bool {
 			newHost := sshConn.HostHeader
+			forceHTTPS = forceHTTPS || sshConn.ForceHTTPS
 
 			if sshConn.StripPath != viper.GetBool("strip-http-path") {
 				stripPath = sshConn.StripPath
@@ -206,6 +276,17 @@ func Start(state *utils.State) {
 			c.Request.Host = newHost
 			return false
 		})
+
+		if forceHTTPS && c.Request.TLS == nil && viper.GetBool("https") {
+			c.Request.URL.Scheme = "https"
+			c.Request.URL.Host = hostname
+			if state.Ports.HTTPSPort != 443 {
+				c.Request.URL.Host = fmt.Sprintf("%s:%d", hostname, state.Ports.HTTPSPort)
+			}
+
+			c.Redirect(http.StatusFound, c.Request.URL.String())
+			return
+		}
 
 		if viper.GetBool("strip-http-path") && stripPath {
 			c.Request.RequestURI = strings.TrimPrefix(c.Request.RequestURI, currentListener.HTTPUrl.Path)
@@ -235,13 +316,22 @@ func Start(state *utils.State) {
 			return
 		}
 
-		reqBody, err := ioutil.ReadAll(c.Request.Body)
-		if err != nil {
-			log.Println("Error reading request body:", err)
-			return
+		var err error
+		var reqBody []byte
+
+		if viper.GetInt64("service-console-max-content-length") == -1 || (viper.GetInt64("service-console-max-content-length") > -1 && c.Request.ContentLength > -1 && c.Request.ContentLength < viper.GetInt64("service-console-max-content-length")) {
+			reqBody, err = io.ReadAll(c.Request.Body)
+			if err != nil {
+				log.Println("Error reading request body:", err)
+				return
+			}
 		}
 
-		c.Request.Body = ioutil.NopCloser(bytes.NewBuffer(reqBody))
+		if reqBody != nil {
+			c.Request.Body = io.NopCloser(bytes.NewBuffer(reqBody))
+		} else {
+			reqBody = []byte("{\"_sish_status\": false, \"_sish_message\": \"request body size exceeds limit for service console\"}")
+		}
 
 		err = forward.ResponseModifier(ResponseModifier(state, hostname, reqBody, c, currentListener))(currentListener.Forward)
 		if err != nil {
@@ -250,6 +340,8 @@ func Start(state *utils.State) {
 
 		gin.WrapH(currentListener.Balancer)(c)
 	})
+
+	var acmeIssuer *certmagic.ACMEIssuer = nil
 
 	// If HTTPS is enabled, setup certmagic to allow us to provision HTTPS certs on the fly.
 	// You can use sish without a wildcard cert, but you really should. If you get a lot of clients
@@ -261,7 +353,7 @@ func Start(state *utils.State) {
 
 		certManager := certmagic.NewDefault()
 
-		acmeIssuer := certmagic.NewACMEIssuer(certManager, certmagic.DefaultACME)
+		acmeIssuer = certmagic.NewACMEIssuer(certManager, certmagic.DefaultACME)
 
 		acmeIssuer.Agreed = viper.GetBool("https-ondemand-certificate-accept-terms")
 		acmeIssuer.Email = viper.GetString("https-ondemand-certificate-email")
@@ -269,7 +361,7 @@ func Start(state *utils.State) {
 		certManager.Issuers = []certmagic.Issuer{acmeIssuer}
 
 		certManager.OnDemand = &certmagic.OnDemandConfig{
-			DecisionFunc: func(name string) error {
+			DecisionFunc: func(ctx context.Context, name string) error {
 				if !viper.GetBool("https-ondemand-certificate") {
 					return fmt.Errorf("ondemand certificate retrieval is not enabled")
 				}
@@ -277,7 +369,7 @@ func Start(state *utils.State) {
 				ok := false
 
 				state.HTTPListeners.Range(func(key string, locationListener *utils.HTTPHolder) bool {
-					if name == locationListener.HTTPUrl.Host {
+					if name == locationListener.HTTPUrl.Host || utils.MatchesWildcardHost(name, locationListener.HTTPUrl.Host) {
 						ok = true
 						return false
 					}
@@ -308,7 +400,7 @@ func Start(state *utils.State) {
 		go func() {
 			// We'll replace this with a custom listener
 			// That listener will then check the hostname of the request and choose the connection to send it to
-			portListener, err := net.Listen("tcp", httpsServer.Addr)
+			portListener, err := utils.Listen(httpsServer.Addr)
 			if err != nil {
 				log.Fatalf("couldn't listen to %q: %q\n", httpsServer.Addr, err.Error())
 			}
@@ -376,10 +468,13 @@ func Start(state *utils.State) {
 		Addr:    viper.GetString("http-address"),
 		Handler: r,
 	}
+	if acmeIssuer != nil {
+		httpServer.Handler = acmeIssuer.HTTPChallengeHandler(r)
+	}
 
 	var httpListener net.Listener
 
-	l, err := net.Listen("tcp", httpServer.Addr)
+	l, err := utils.Listen(httpServer.Addr)
 	if err != nil {
 		log.Fatalf("couldn't listen to %q: %q\n", httpServer.Addr, err.Error())
 	}

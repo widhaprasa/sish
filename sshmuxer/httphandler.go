@@ -18,12 +18,7 @@ import (
 
 // handleHTTPListener handles the creation of the httpHandler
 // (or addition for load balancing) and set's up the underlying listeners.
-func handleHTTPListener(check *channelForwardMsg, stringPort string, requestMessages string, listenerHolder *utils.ListenerHolder, state *utils.State, sshConn *utils.SSHConnection) (*utils.HTTPHolder, *url.URL, string, error) {
-	scheme := "http"
-	if stringPort == "443" {
-		scheme = "https"
-	}
-
+func handleHTTPListener(check *channelForwardMsg, _ string, requestMessages string, listenerHolder *utils.ListenerHolder, state *utils.State, sshConn *utils.SSHConnection, scheme string) (*utils.HTTPHolder, *url.URL, string, error) {
 	hostUrl, pH := utils.GetOpenHost(check.Addr, state, sshConn)
 
 	if (hostUrl == nil || !strings.HasPrefix(hostUrl.Host, check.Addr)) && viper.GetBool("force-requested-subdomains") {
@@ -34,6 +29,7 @@ func handleHTTPListener(check *channelForwardMsg, stringPort string, requestMess
 		rT := httpmuxer.RoundTripper()
 
 		fwd, err := forward.New(
+			forward.Stream(true),
 			forward.PassHostHeader(true),
 			forward.RoundTripper(rT),
 			forward.WebsocketRoundTripper(rT),
@@ -103,14 +99,14 @@ func handleHTTPListener(check *channelForwardMsg, stringPort string, requestMess
 		if viper.GetBool("service-console") && sendToken {
 			scheme := "http"
 			portString := ""
-			if httpPort != 80 {
-				portString = fmt.Sprintf(":%d", httpPort)
+			if state.Ports.HTTPPort != 80 {
+				portString = fmt.Sprintf(":%d", state.Ports.HTTPPort)
 			}
 
 			if viper.GetBool("https") {
 				scheme = "https"
-				if httpsPort != 443 {
-					portString = fmt.Sprintf(":%d", httpsPort)
+				if state.Ports.HTTPSPort != 443 {
+					portString = fmt.Sprintf(":%d", state.Ports.HTTPSPort)
 				}
 			}
 
@@ -126,8 +122,8 @@ func handleHTTPListener(check *channelForwardMsg, stringPort string, requestMess
 	}
 
 	httpPortString := ""
-	if httpPort != 80 {
-		httpPortString = fmt.Sprintf(":%d", httpPort)
+	if state.Ports.HTTPPort != 80 {
+		httpPortString = fmt.Sprintf(":%d", state.Ports.HTTPPort)
 	}
 
 	requestMessages += fmt.Sprintf("%s: http://%s%s%s%s\r\n", aurora.BgBlue("HTTP"), userPass, pH.HTTPUrl.Host, httpPortString, pH.HTTPUrl.Path)
@@ -136,11 +132,11 @@ func handleHTTPListener(check *channelForwardMsg, stringPort string, requestMess
 
 	if viper.GetBool("https") {
 		httpsPortString := ""
-		if httpsPort != 443 {
-			httpsPortString = fmt.Sprintf(":%d", httpsPort)
+		if state.Ports.HTTPSPort != 443 {
+			httpsPortString = fmt.Sprintf(":%d", state.Ports.HTTPSPort)
 		}
 
-		requestMessages += fmt.Sprintf("%s: https://%s%s%s%s\r\n", aurora.BgBlue("HTTPS"), userPass, pH.HTTPUrl.Host, httpPortString, pH.HTTPUrl.Path)
+		requestMessages += fmt.Sprintf("%s: https://%s%s%s%s\r\n", aurora.BgBlue("HTTPS"), userPass, pH.HTTPUrl.Host, httpsPortString, pH.HTTPUrl.Path)
 		log.Printf("%s forwarding started: https://%s%s%s%s -> %s for client: %s\n", aurora.BgBlue("HTTPS"), userPass, pH.HTTPUrl.Host, httpsPortString, pH.HTTPUrl.Path, listenerHolder.Addr().String(), sshConn.SSHConn.RemoteAddr().String())
 	}
 

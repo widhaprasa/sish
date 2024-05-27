@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -16,36 +17,45 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// commandSplitter is the character that terminates a prefix.
-const commandSplitter = "="
+const (
+	// commandSplitter is the character that terminates a prefix.
+	commandSplitter = "="
 
-// proxyProtocolPrefix is used when deciding what proxy protocol
-// version to use.
-const proxyProtocolPrefix = "proxy-protocol"
+	// proxyProtocolPrefix is used when deciding what proxy protocol
+	// version to use.
+	proxyProtocolPrefix = "proxy-protocol"
 
-// proxyProtoPrefixLegacy is used when deciding what proxy protocol
-// version to use.
-const proxyProtoPrefixLegacy = "proxyproto"
+	// proxyProtoPrefixLegacy is used when deciding what proxy protocol
+	// version to use.
+	proxyProtoPrefixLegacy = "proxyproto"
 
-// hostHeaderPrefix is the host-header for a specific session.
-const hostHeaderPrefix = "host-header"
+	// hostHeaderPrefix is the host-header for a specific session.
+	hostHeaderPrefix = "host-header"
 
-// stripPathPrefix defines whether or not to strip the path (if enabled globally).
-const stripPathPrefix = "strip-path"
+	// stripPathPrefix defines whether or not to strip the path (if enabled globally).
+	stripPathPrefix = "strip-path"
 
-// sniProxyPrefix defines whether or not to enable SNI Proxying (if enabled globally).
-const sniProxyPrefix = "sni-proxy"
+	// sniProxyPrefix defines whether or not to enable SNI Proxying (if enabled globally).
+	sniProxyPrefix = "sni-proxy"
 
-// tcpAliasPrefix defines whether or not to enable TCP Aliasing (if enabled globally).
-const tcpAliasPrefix = "tcp-alias"
+	// tcpAliasPrefix defines whether or not to enable TCP Aliasing (if enabled globally).
+	tcpAliasPrefix = "tcp-alias"
 
-// localForwardPrefix defines whether or not a local forward is being used (allows for logging).
-const localForwardPrefix = "local-forward"
+	// localForwardPrefix defines whether or not a local forward is being used (allows for logging).
+	localForwardPrefix = "local-forward"
 
-// autoClosePrefix defines whether or not a connection will close when all forwards are cleaned up.
-const autoClosePrefix = "auto-close"
+	// autoClosePrefix defines whether or not a connection will close when all forwards are cleaned up.
+	autoClosePrefix = "auto-close"
 
-const tcpAddressPrefix = "tcp-address"
+	// forceHTTPSPrefix defines whether or not a connection will redirect to https.
+	forceHTTPSPrefix = "force-https"
+
+	// tcpAddressPrefix defines whether or not to set the tcp address for a tcp forward.
+	tcpAddressPrefix = "tcp-address"
+
+	// tcpAliasesAllowedUsersPrefix defines a comma separated list of allowed key fingerprints to access TCP aliases.
+	tcpAliasesAllowedUsersPrefix = "tcp-aliases-allowed-users"
+)
 
 // handleSession handles the channel when a user requests a session.
 // This is how we send console messages.
@@ -199,6 +209,17 @@ func handleSession(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, stat
 						sshConn.AutoClose = autoClose
 
 						sshConn.SendMessage(fmt.Sprintf("Auto close for connection set to: %t", sshConn.AutoClose), true)
+					case forceHTTPSPrefix:
+						if !viper.GetBool("force-https") {
+							break
+						}
+
+						forceHTTPS, err := strconv.ParseBool(param)
+						if err != nil {
+							log.Printf("Unable to detect force https setting. Using false as default: %s", err)
+						}
+						sshConn.ForceHTTPS = forceHTTPS
+						sshConn.SendMessage(fmt.Sprintf("Force https for connection set to: %t", sshConn.ForceHTTPS), true)
 					case localForwardPrefix:
 						localForward, err := strconv.ParseBool(param)
 
@@ -209,6 +230,33 @@ func handleSession(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, stat
 						sshConn.LocalForward = localForward
 
 						sshConn.SendMessage(fmt.Sprintf("Connection used for local forwards set to: %t", sshConn.LocalForward), true)
+					case tcpAliasesAllowedUsersPrefix:
+						if !viper.GetBool("tcp-aliases-allowed-users") {
+							break
+						}
+
+						fingerPrints := strings.Split(param, ",")
+
+						for i, fingerPrint := range fingerPrints {
+							fingerPrints[i] = strings.TrimSpace(fingerPrint)
+						}
+
+						connPubKey := ""
+						if sshConn.SSHConn.Permissions != nil {
+							if _, ok := sshConn.SSHConn.Permissions.Extensions["pubKey"]; ok {
+								connPubKey = sshConn.SSHConn.Permissions.Extensions["pubKeyFingerprint"]
+							}
+						}
+
+						sshConn.TCPAliasesAllowedUsers = fingerPrints
+
+						printKeys := fingerPrints
+						if connPubKey != "" {
+							sshConn.TCPAliasesAllowedUsers = append(sshConn.TCPAliasesAllowedUsers, connPubKey)
+							printKeys = slices.Insert(printKeys, 0, fmt.Sprintf("%s (self)", connPubKey))
+						}
+
+						sshConn.SendMessage(fmt.Sprintf("Allowed users for TCP Aliases set to: %s", strings.Join(printKeys, ", ")), true)
 					}
 				}
 
@@ -250,6 +298,8 @@ func handleAlias(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, state 
 		return
 	}
 
+	check.Addr = strings.ToLower(check.Addr)
+
 	tcpAliasToConnect := fmt.Sprintf("%s:%d", check.Addr, check.Port)
 	loc, ok := state.AliasListeners.Load(tcpAliasToConnect)
 	if !ok {
@@ -259,6 +309,34 @@ func handleAlias(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, state 
 	}
 
 	aH := loc
+
+	pubKeyFingerprint := ""
+
+	if sshConn.SSHConn.Permissions != nil {
+		if _, ok := sshConn.SSHConn.Permissions.Extensions["pubKey"]; ok {
+			pubKeyFingerprint = sshConn.SSHConn.Permissions.Extensions["pubKeyFingerprint"]
+		}
+	}
+
+	if viper.GetBool("tcp-aliases-allowed-users") {
+		connAllowed := false
+
+		aH.SSHConnections.Range(func(name string, conn *utils.SSHConnection) bool {
+			for _, fingerprint := range conn.TCPAliasesAllowedUsers {
+				if fingerprint == "any" || (fingerprint != "" && pubKeyFingerprint != "" && fingerprint == pubKeyFingerprint) {
+					connAllowed = true
+					return false
+				}
+			}
+			return true
+		})
+
+		if !connAllowed {
+			log.Println("Connection not allowed because fingerprint is not found in allowed list")
+			sshConn.CleanUp(state)
+			return
+		}
+	}
 
 	connectionLocation, err := aH.Balancer.NextServer()
 	if err != nil {
@@ -276,7 +354,12 @@ func handleAlias(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, state 
 
 	aliasAddr := string(host)
 
-	logLine := fmt.Sprintf("Accepted connection from %s -> %s", sshConn.SSHConn.RemoteAddr().String(), tcpAliasToConnect)
+	connString := sshConn.SSHConn.RemoteAddr().String()
+	if pubKeyFingerprint != "" {
+		connString = fmt.Sprintf("%s (%s)", connString, pubKeyFingerprint)
+	}
+
+	logLine := fmt.Sprintf("Accepted connection from %s -> %s", connString, tcpAliasToConnect)
 	log.Println(logLine)
 
 	if viper.GetBool("log-to-client") {
