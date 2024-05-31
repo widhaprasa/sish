@@ -408,7 +408,7 @@ func (c *WebConsole) BroadcastRoute(route string, message []byte) {
 	}
 }
 
-// HandleDisconnectRoute handles the disconnection request for a forwarded route.
+// HandleTCPPortForwardingAuth handles the tcp port forwarding auth.
 func (c *WebConsole) HandleTCPPortForwardingAuth(proxyUrl string, g *gin.Context) {
 	route := strings.Split(strings.TrimPrefix(g.Request.URL.Path, "/_sish/api/tcpportfwdauth/"), "/")
 	if len(route) < 1 {
@@ -421,8 +421,8 @@ func (c *WebConsole) HandleTCPPortForwardingAuth(proxyUrl string, g *gin.Context
 		return
 	}
 
-	encRouteName := route[0]
-	if encRouteName == "create" || encRouteName == "delete" {
+	routeName := route[0]
+	if routeName == "create" || routeName == "delete" || routeName == "disconnect" {
 
 		// Validate method
 		method := g.Request.Method
@@ -439,7 +439,7 @@ func (c *WebConsole) HandleTCPPortForwardingAuth(proxyUrl string, g *gin.Context
 			return
 		}
 
-		if encRouteName == "create" {
+		if routeName == "create" {
 			// Create
 
 			password := body["password"].(string)
@@ -466,7 +466,7 @@ func (c *WebConsole) HandleTCPPortForwardingAuth(proxyUrl string, g *gin.Context
 				"ping_client": pingClient,
 			})
 
-		} else {
+		} else if routeName == "delete" {
 			// Delete
 
 			port := int(body["port"].(float64))
@@ -477,10 +477,36 @@ func (c *WebConsole) HandleTCPPortForwardingAuth(proxyUrl string, g *gin.Context
 			g.JSON(http.StatusOK, map[string]any{
 				"username": username,
 			})
+		} else {
+			// Disconnect
+
+			port := int(body["port"].(float64))
+			username := strconv.Itoa(port)
+
+			found := false
+
+			c.State.SSHConnections.Range(func(clientName string, holderConn *SSHConnection) bool {
+				if holderConn.SSHConn.User() == username {
+					holderConn.CleanUp(c.State)
+		
+					found = true
+					return false
+				}
+		
+				return true
+			})
+
+			if found {
+				g.JSON(http.StatusOK, map[string]any{
+					"username": username,
+				})
+			} else {
+				g.String(http.StatusNotFound, "Username not found")
+			}
 		}
 		return
 
-	} else if encRouteName == "list" {
+	} else if routeName == "list" {
 		// Delete
 
 		// Validate method
