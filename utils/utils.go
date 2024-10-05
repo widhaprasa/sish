@@ -42,7 +42,7 @@ import (
 
 const (
 	// sishDNSPrefix is the prefix used for DNS TXT records.
-	sishDNSPrefix = "sish="
+	sishDNSPrefix = "_sish"
 
 	// Prefix used for defining wildcard host matchers.
 	wildcardPrefix = "*."
@@ -464,6 +464,18 @@ func GetSSHConfig(state *State) *ssh.ServerConfig {
 				return nil, nil
 			}
 
+			// Allow validation of passwords via a sub-request to another service
+			authUrl := viper.GetString("authentication-password-request-url")
+			if authUrl != "" {
+				validKey, err := checkAuthenticationPasswordRequest(authUrl, password, c.RemoteAddr(), c.User())
+				if err != nil {
+					log.Printf("Error calling authentication password URL %s: %s\n", authUrl, err)
+				}
+				if validKey {
+					return nil, nil
+				}
+			}
+
 			// TCP Port Forwarding Authentication
 			if viper.GetBool("tcp-port-forwarding-authentication") {
 				tcpPortFwdAuth, ok := state.TCPPortFwdAuthListeners.Load(c.User())
@@ -500,7 +512,7 @@ func GetSSHConfig(state *State) *ssh.ServerConfig {
 			if authUrl != "" {
 				validKey, err := checkAuthenticationKeyRequest(authUrl, authKey, c.RemoteAddr(), c.User())
 				if err != nil {
-					log.Printf("Error calling authentication URL %s: %s\n", authUrl, err)
+					log.Printf("Error calling authentication key URL %s: %s\n", authUrl, err)
 				}
 				if validKey {
 					permssionsData := &ssh.Permissions{
@@ -551,6 +563,40 @@ func checkAuthenticationKeyRequest(authUrl string, authKey []byte, addr net.Addr
 
 	if res.StatusCode != http.StatusOK {
 		log.Printf("Public key rejected by auth service: %s with status %d", urlS, res.StatusCode)
+		return false, nil
+	}
+
+	return true, nil
+}
+
+// checkAuthenticationPasswordRequest makes an HTTP POST request to the specified url with
+// the provided user-password pair to validate whether it should be accepted.
+func checkAuthenticationPasswordRequest(authUrl string, password []byte, addr net.Addr, user string) (bool, error) {
+	parsedUrl, err := url.ParseRequestURI(authUrl)
+	if err != nil {
+		return false, fmt.Errorf("error parsing url %s", err)
+	}
+
+	c := &http.Client{
+		Timeout: viper.GetDuration("authentication-password-request-timeout"),
+	}
+	urlS := parsedUrl.String()
+	reqBodyMap := map[string]string{
+		"password":    string(password),
+		"remote_addr": addr.String(),
+		"user":        user,
+	}
+	reqBody, err := json.Marshal(reqBodyMap)
+	if err != nil {
+		return false, fmt.Errorf("error jsonifying request body")
+	}
+	res, err := c.Post(urlS, "application/json", bytes.NewBuffer(reqBody))
+	if err != nil {
+		return false, err
+	}
+
+	if res.StatusCode != http.StatusOK {
+		log.Printf("Password rejected by auth service: %s with status %d", urlS, res.StatusCode)
 		return false, nil
 	}
 
@@ -686,16 +732,12 @@ func verifyDNS(addr string, sshConn *SSHConnection) (bool, string, error) {
 		return false, "", nil
 	}
 
-	records, err := net.LookupTXT(addr)
+	records, err := net.LookupTXT(fmt.Sprintf("%s.%s", sishDNSPrefix, addr))
 
 	for _, v := range records {
-		if strings.HasPrefix(v, sishDNSPrefix) {
-			dnsPubKeyFingerprint := strings.TrimSpace(strings.TrimPrefix(v, sishDNSPrefix))
-
-			match := sshConn.SSHConn.Permissions.Extensions["pubKeyFingerprint"] == dnsPubKeyFingerprint
-			if match {
-				return match, dnsPubKeyFingerprint, err
-			}
+		match := sshConn.SSHConn.Permissions.Extensions["pubKeyFingerprint"] == v
+		if match {
+			return match, v, err
 		}
 	}
 
@@ -745,7 +787,7 @@ func GetOpenPort(addr string, port uint32, state *State, sshConn *SSHConnection,
 			checkedPort, err := CheckPort(checkerPort, viper.GetString("port-bind-range"))
 			_, ok := state.TCPListeners.Load(listenAddr)
 
-			if err == nil && (!viper.GetBool("tcp-load-balancer") || (viper.GetBool("tcp-load-balancer") && !ok) || (sniProxyEnabled && !ok)) {
+			if err == nil && !ok && (viper.GetBool("tcp-load-balancer") || viper.GetBool("sni-load-balancer")) {
 				ln, listenErr := Listen(listenAddr)
 				if listenErr != nil {
 					err = listenErr
@@ -768,7 +810,7 @@ func GetOpenPort(addr string, port uint32, state *State, sshConn *SSHConnection,
 
 			listenAddr = GenerateAddress(bindAddr, bindPort)
 			holder, ok := state.TCPListeners.Load(listenAddr)
-			if ok && (!sniProxyEnabled && viper.GetBool("tcp-load-balancer") || (sniProxyEnabled && viper.GetBool("sni-load-balancer"))) {
+			if ok && ((!sniProxyEnabled && viper.GetBool("tcp-load-balancer")) || sniProxyEnabled) {
 				tH = holder
 				ok = false
 			}

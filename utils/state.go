@@ -48,9 +48,11 @@ func (w LogWriter) Write(bytes []byte) (int, error) {
 // ListenerHolder represents a generic listener.
 type ListenerHolder struct {
 	net.Listener
-	ListenAddr string
-	Type       ListenerType
-	SSHConn    *SSHConnection
+	ListenAddr   string
+	Type         ListenerType
+	SSHConn      *SSHConnection
+	OriginalAddr string
+	OriginalPort uint32
 }
 
 // HTTPHolder holds proxy and connection info.
@@ -235,7 +237,7 @@ func NewState() *State {
 		IPFilter:                Filter,
 		Console:                 NewWebConsole(),
 		LogWriter:               multiWriter,
-		Ports:          &Ports{},
+		Ports:                   &Ports{},
 		TCPPortFwdAuthListeners: syncmap.New[string, *TCPPortFwdAuthHolder](),
 	}
 }
